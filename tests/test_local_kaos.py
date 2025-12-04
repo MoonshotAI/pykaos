@@ -122,6 +122,14 @@ async def test_exec_runs_command_and_streams(local_kaos: LocalKaos):
 
 
 @pytest.mark.asyncio
+async def test_exec_non_zero_exit(local_kaos: LocalKaos):
+    process = await local_kaos.exec(*_python_code_args("import sys; sys.exit(7)"))
+
+    exit_code = await process.wait()
+    assert exit_code == 7
+
+
+@pytest.mark.asyncio
 async def test_exec_wait_timeout(local_kaos: LocalKaos):
     process = await local_kaos.exec(*_python_code_args("import time; time.sleep(1)"))
     assert process.pid > 0
