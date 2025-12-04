@@ -104,6 +104,7 @@ class Kaos(Protocol):
         ...
 
 
+@runtime_checkable
 class KaosProcess(Protocol):
     """Process interface exposed by KAOS `exec` implementations."""
 
