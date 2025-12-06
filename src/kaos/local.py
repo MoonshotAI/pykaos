@@ -57,7 +57,6 @@ class LocalKaos:
         async def kill(self) -> None:
             self._process.kill()
 
-
     def pathclass(self) -> type[PurePath]:
         return PurePathClass
 
