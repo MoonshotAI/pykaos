@@ -72,7 +72,7 @@ class SSHKaos:
         self._connection: asyncssh.SSHClientConnection | None = None
         self._sftp: asyncssh.SFTPClient | None = None
         self._home_dir: str | None = None
-        self._cwd: str = "~"
+        self._cwd: str = "."
 
     async def _ensure_connected(self) -> None:
         """Ensure SSH connection is established."""
