@@ -77,16 +77,6 @@ async def test_command_chaining():
     assert stderr == snapshot("")
 
 
-# @pytest.mark.asyncio
-# async def test_environment_variables():
-#     """Environment variables should be usable within one cmd session."""
-#     exit_code, stdout, stderr = await run_cmd("set TEST_VAR=test_value&& echo %TEST_VAR%")
-
-#     assert exit_code == 0
-#     assert stdout.strip() == snapshot("test_value")
-#     assert stderr == snapshot("")
-
-
 @pytest.mark.asyncio
 async def test_file_operations():
     """Basic file write/read using cmd redirection."""
