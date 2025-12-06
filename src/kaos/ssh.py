@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING, Literal, cast
 
 import asyncssh
 
-from kaos import Kaos, KaosProcess, StatResult, StrOrKaosPath
+from kaos import Kaos, StatResult, StrOrKaosPath
 from kaos.path import KaosPath
 
 if TYPE_CHECKING:
@@ -26,10 +26,37 @@ class SSHKaos:
 
     name: str = "ssh"
 
+    class Process(Kaos.Process):
+        """KAOS process wrapper around asyncssh.SSHClientProcess."""
+
+        def __init__(self, process: asyncssh.SSHClientProcess[bytes]) -> None:
+            self._process = process
+            self.stdin: StreamWriter = cast(StreamWriter, process.stdin)
+            self.stdout: StreamReader = cast(StreamReader, process.stdout)
+            self.stderr: StreamReader = cast(StreamReader, process.stderr)
+
+        @property
+        def pid(self) -> int:
+            # FIXME: SSHClientProcess does not have a pid attribute.
+            return -1
+
+        @property
+        def returncode(self) -> int | None:
+            return self._process.returncode
+
+        async def wait(self) -> int:
+            completed = await self._process.wait()
+            if completed.returncode is not None:
+                return completed.returncode
+            return self._process.returncode or 0
+
+        async def kill(self) -> None:
+            self._process.kill()
+
     def __init__(
         self,
         host: str,
-        username: str | None = None,
+        username: str,
         port: int = 22,
         password: str | None = None,
         key_filename: str | None = None,
@@ -347,7 +374,7 @@ class SSHKaos:
                     pass
             raise OSError(f"mkdir failed: {e}") from e
 
-    async def exec(self, *args: str) -> KaosProcess:
+    async def exec(self, *args: str) -> Kaos.Process:
         if not args:
             raise ValueError(
                 "At least one argument (the program to execute) is required."
@@ -358,7 +385,7 @@ class SSHKaos:
 
         command = " ".join(shlex.quote(arg) for arg in args)
         process = await self._connection.create_process(command, encoding=None)
-        return SSHKaosProcess(process)
+        return self.Process(process)
 
     async def close(self) -> None:
         """Close the SSH connection."""
@@ -370,38 +397,10 @@ class SSHKaos:
             self._connection = None
 
 
-class SSHKaosProcess:
-    """KAOS process wrapper around asyncssh.SSHClientProcess."""
-
-    def __init__(self, process: asyncssh.SSHClientProcess[bytes]) -> None:
-        self._process = process
-        self.stdin: StreamWriter = cast(StreamWriter, process.stdin)
-        self.stdout: StreamReader = cast(StreamReader, process.stdout)
-        self.stderr: StreamReader = cast(StreamReader, process.stderr)
-
-    @property
-    def pid(self) -> int:
-        # FIXME: SSHClientProcess does not have a pid attribute.
-        return -1
-
-    @property
-    def returncode(self) -> int | None:
-        return self._process.returncode
-
-    async def wait(self) -> int:
-        completed = await self._process.wait()
-        if completed.returncode is not None:
-            return completed.returncode
-        return self._process.returncode or 0
-
-    async def kill(self) -> None:
-        self._process.kill()
-
-
 # Default SSH KAOS instance factory
 def create_ssh_kaos(
     host: str,
-    username: str | None = None,
+    username: str,
     port: int = 22,
     password: str | None = None,
     key_filename: str | None = None,
