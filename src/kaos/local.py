@@ -31,7 +31,7 @@ class LocalKaos:
 
     name: str = "local"
 
-    class Process(Kaos.Process):
+    class Process:
         """Local KAOS process wrapper around asyncio.subprocess.Process."""
 
         def __init__(self, process: AsyncioProcess) -> None:
