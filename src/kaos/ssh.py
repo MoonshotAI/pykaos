@@ -122,6 +122,7 @@ class SSHKaos:
             options["client_keys"] = client_keys
         # Ensure encoding is None to read/write bytes
         options["encoding"] = None
+        # Known hosts is None to avoid the "Host key is not trusted" error
         options["known_hosts"] = None
         # Connect to ssh
         connection = await asyncssh.connect(**options)

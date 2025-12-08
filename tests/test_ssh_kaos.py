@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import platform
 import stat
 from collections.abc import AsyncGenerator
 from pathlib import PurePosixPath
@@ -16,17 +17,17 @@ from kaos import reset_current_kaos, set_current_kaos
 from kaos.path import KaosPath
 from kaos.ssh import SSHKaos
 
-pytestmark = pytest.mark.asyncio
+pytestmark = [
+    pytest.mark.asyncio,
+    pytest.mark.skipif(platform.system() == "Windows", reason="SSH tests run only on non-Windows."),
+]
 
 
 @pytest.fixture(scope="module")
 def ssh_kaos_config() -> dict[str, Any]:
     """Collect SSH connection parameters from environment variables."""
-    host = os.environ.get("KAOS_SSH_HOST")
+    host = os.environ.get("KAOS_SSH_HOST", "127.0.0.1")
     username = os.environ.get("KAOS_SSH_USERNAME")
-
-    if not host or not username:
-        pytest.skip("SSH integration tests require KAOS_SSH_HOST and KAOS_SSH_USERNAME")
 
     config: dict[str, Any] = {
         "host": host,
