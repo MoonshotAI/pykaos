@@ -7,11 +7,11 @@ from pathlib import PurePath
 from typing import TYPE_CHECKING, Literal, Protocol, runtime_checkable
 
 if TYPE_CHECKING:
-    from kaos.path import KaosPath
-
     from asyncio import StreamReader, StreamWriter
 
     from asyncssh.stream import SSHReader, SSHWriter
+
+    from kaos.path import KaosPath
 
     def type_check(
         stream_reader: StreamReader,

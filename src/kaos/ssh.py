@@ -20,7 +20,6 @@ from asyncssh.constants import (
 from kaos import AsyncReadable, AsyncWritable, Kaos, StatResult, StrOrKaosPath
 from kaos.path import KaosPath
 
-
 if TYPE_CHECKING:
 
     def type_check(ssh: SSHKaos) -> None:
