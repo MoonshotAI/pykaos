@@ -86,9 +86,7 @@ class SSHKaos:
                 options["password"] = self.password
             client_keys: list[str | asyncssh.SSHKey] = []
             if self.key_contents:
-                client_keys.extend(
-                    [asyncssh.import_private_key(key) for key in self.key_contents]
-                )
+                client_keys.extend([asyncssh.import_private_key(key) for key in self.key_contents])
             if self.key_paths:
                 client_keys.extend(self.key_paths)
             if client_keys:
@@ -386,9 +384,7 @@ class SSHKaos:
 
     async def exec(self, *args: str) -> Kaos.Process:
         if not args:
-            raise ValueError(
-                "At least one argument (the program to execute) is required."
-            )
+            raise ValueError("At least one argument (the program to execute) is required.")
 
         await self._ensure_connected()
         assert self._connection is not None
