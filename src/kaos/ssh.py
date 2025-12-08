@@ -2,10 +2,9 @@ from __future__ import annotations
 
 import shlex
 import stat
-from asyncio import StreamReader, StreamWriter
 from collections.abc import AsyncGenerator
 from pathlib import PurePath, PurePosixPath
-from typing import TYPE_CHECKING, Literal, cast
+from typing import TYPE_CHECKING, Literal
 
 import asyncssh
 from asyncssh.constants import (
@@ -18,8 +17,15 @@ from asyncssh.constants import (
     FILEXFER_TYPE_SYMLINK,
 )
 
-from kaos import Kaos, StatResult, StrOrKaosPath
+from kaos import AsyncReadable, AsyncWritable, Kaos, StatResult, StrOrKaosPath
 from kaos.path import KaosPath
+
+
+if TYPE_CHECKING:
+
+    def type_check(ssh: SSHKaos) -> None:
+        _: Kaos = ssh
+
 
 _FILEXFER_TYPE_TO_MODE = {
     FILEXFER_TYPE_REGULAR: stat.S_IFREG,
@@ -52,12 +58,6 @@ def _sec_with_nanos(sec: int, ns: int | None) -> float:
     return float(sec) + (ns / 1_000_000_000.0)
 
 
-if TYPE_CHECKING:
-
-    def type_check(ssh: SSHKaos) -> None:
-        _: Kaos = ssh
-
-
 class SSHKaos:
     """
     A KAOS implementation that interacts with a remote machine via SSH and SFTP.
@@ -70,9 +70,9 @@ class SSHKaos:
 
         def __init__(self, process: asyncssh.SSHClientProcess[bytes]) -> None:
             self._process = process
-            self.stdin: StreamWriter = cast(StreamWriter, process.stdin)
-            self.stdout: StreamReader = cast(StreamReader, process.stdout)
-            self.stderr: StreamReader = cast(StreamReader, process.stderr)
+            self.stdin: AsyncWritable = process.stdin
+            self.stdout: AsyncReadable = process.stdout
+            self.stderr: AsyncReadable = process.stderr
 
         @property
         def pid(self) -> int:
