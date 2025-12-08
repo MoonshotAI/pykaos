@@ -11,7 +11,7 @@ import pytest
 
 from kaos import reset_current_kaos, set_current_kaos
 from kaos.path import KaosPath
-from kaos.ssh import SSHKaos, create_ssh_kaos
+from kaos.ssh import SSHKaos
 
 
 @pytest.fixture
@@ -19,11 +19,10 @@ def ssh_kaos_config() -> dict[str, str | None]:
     """SSH 连接参数，从环境变量读取。"""
     return {
         "host": os.environ.get("KAOS_SSH_HOST", "localhost"),
-        "username": os.environ.get("KAOS_SSH_USERNAME"),
         "port": os.environ.get("KAOS_SSH_PORT", "22"),
+        "username": os.environ.get("KAOS_SSH_USERNAME"),
         "password": os.environ.get("KAOS_SSH_PASSWORD"),
-        "key_filename": os.environ.get("KAOS_SSH_KEY_FILENAME"),
-        "known_hosts": os.environ.get("KAOS_SSH_KNOWN_HOSTS"),
+        "key_paths": os.environ.get("KAOS_SSH_KEY_PATHS"),
     }
 
 
@@ -34,13 +33,13 @@ async def ssh_kaos(ssh_kaos_config: dict[str, str | None]) -> AsyncGenerator[SSH
     if not config["host"] or not config["username"]:
         pytest.skip("SSH test configuration not provided")
 
-    kaos = create_ssh_kaos(
+    key_paths = config.get("key_paths")
+    kaos = SSHKaos(
         host=str(config["host"]),
         username=config["username"],
         port=int(config["port"] or 22),
         password=config.get("password"),
-        key_filename=config.get("key_filename"),
-        known_hosts=config.get("known_hosts"),
+        key_paths=key_paths.split(",") if key_paths else None,
     )
 
     try:
@@ -88,7 +87,7 @@ async def test_pathclass_and_initial_cwd(ssh_kaos: SSHKaos | None):
 
     assert ssh_kaos.pathclass() is PurePosixPath
     assert isinstance(ssh_kaos.gethome(), KaosPath)
-    assert str(ssh_kaos.getcwd()) == "~"
+    assert str(ssh_kaos.getcwd()) == "."
 
 
 @pytest.mark.asyncio
@@ -122,9 +121,7 @@ async def test_mkdir_variants_and_stat(ssh_kaos: SSHKaos, remote_base: str):
 
 
 @pytest.mark.asyncio
-async def test_write_and_read_text_with_kaospath(
-    with_current_kaos: SSHKaos, remote_base: str
-):
+async def test_write_and_read_text_with_kaospath(with_current_kaos: SSHKaos, remote_base: str):
     await with_current_kaos.chdir(remote_base)
 
     path = KaosPath(remote_base) / "text.txt"
@@ -171,11 +168,89 @@ async def test_iterdir_and_glob(ssh_kaos: SSHKaos, remote_base: str):
     entries = {entry.name async for entry in ssh_kaos.iterdir(remote_base)}
     assert entries == {"file1.txt", "file2.log", "sub"}
 
-    logs = {
-        str(path)
-        async for path in ssh_kaos.glob(remote_base, "*.log", case_sensitive=False)
+    logs = {str(path) async for path in ssh_kaos.glob(remote_base, "*.log", case_sensitive=False)}
+    assert {
+        os.path.join(remote_base, "file2.log"),
+        os.path.join(remote_base, "sub", "inner.LOG"),
+    } <= logs
+
+
+@pytest.mark.asyncio
+async def test_glob_case_sensitivity(ssh_kaos: SSHKaos, remote_base: str):
+    lower = os.path.join(remote_base, "lower.log")
+    upper = os.path.join(remote_base, "Upper.LOG")
+    mixed = os.path.join(remote_base, "MiXeD.LoG")
+
+    await ssh_kaos.writetext(lower, "a")
+    await ssh_kaos.writetext(upper, "b")
+    await ssh_kaos.writetext(mixed, "c")
+
+    insensitive = {
+        str(path) async for path in ssh_kaos.glob(remote_base, "*.log", case_sensitive=False)
     }
-    assert {os.path.join(remote_base, "file2.log"), os.path.join(remote_base, "sub", "inner.LOG")} <= logs
+    assert {lower, upper, mixed} <= insensitive
+
+    sensitive = {
+        str(path) async for path in ssh_kaos.glob(remote_base, "*.log", case_sensitive=True)
+    }
+    assert lower in sensitive
+    assert upper not in sensitive
+    assert mixed not in sensitive
+
+
+@pytest.mark.asyncio
+async def test_glob_directories(ssh_kaos: SSHKaos, remote_base: str):
+    lower_dir = os.path.join(remote_base, "data")
+    upper_dir = os.path.join(remote_base, "DataSet")
+    await ssh_kaos.mkdir(lower_dir, exist_ok=True)
+    await ssh_kaos.mkdir(upper_dir, exist_ok=True)
+    await ssh_kaos.writetext(os.path.join(lower_dir, "file.txt"), "1")
+    await ssh_kaos.writetext(os.path.join(upper_dir, "inner.log"), "2")
+
+    insensitive_dirs = {
+        str(path) async for path in ssh_kaos.glob(remote_base, "data*", case_sensitive=False)
+    }
+    assert lower_dir in insensitive_dirs
+    assert upper_dir in insensitive_dirs
+
+    sensitive_dirs = {
+        str(path) async for path in ssh_kaos.glob(remote_base, "data*", case_sensitive=True)
+    }
+    assert lower_dir in sensitive_dirs
+    assert upper_dir not in sensitive_dirs
+
+
+@pytest.mark.asyncio
+async def test_glob_directory_case_patterns(ssh_kaos: SSHKaos, remote_base: str):
+    lower_dir = os.path.join(remote_base, "logs")
+    upper_dir = os.path.join(remote_base, "LOGS")
+    mixed_dir = os.path.join(remote_base, "LogFiles")
+    nested_dir = os.path.join(upper_dir, "Archive")
+
+    for path in (lower_dir, upper_dir, mixed_dir, nested_dir):
+        await ssh_kaos.mkdir(path, parents=True, exist_ok=True)
+
+    insensitive = {
+        str(path) async for path in ssh_kaos.glob(remote_base, "log*", case_sensitive=False)
+    }
+    assert {lower_dir, upper_dir, mixed_dir} <= insensitive
+
+    sensitive_lower = {
+        str(path) async for path in ssh_kaos.glob(remote_base, "log*", case_sensitive=True)
+    }
+    assert lower_dir in sensitive_lower
+    assert upper_dir not in sensitive_lower
+    assert mixed_dir not in sensitive_lower
+
+    nested_insensitive = {
+        str(path) async for path in ssh_kaos.glob(upper_dir, "arch*", case_sensitive=False)
+    }
+    assert nested_dir in nested_insensitive
+
+    nested_sensitive = {
+        str(path) async for path in ssh_kaos.glob(upper_dir, "arch*", case_sensitive=True)
+    }
+    assert nested_dir not in nested_sensitive
 
 
 @pytest.mark.asyncio
@@ -184,9 +259,7 @@ async def test_exec_stdout_and_stderr(ssh_kaos: SSHKaos | None):
         pytest.skip("SSH not available")
 
     proc = await ssh_kaos.exec("sh", "-c", "echo out && echo err 1>&2")
-    stdout_data, stderr_data = await asyncio.gather(
-        proc.stdout.read(), proc.stderr.read()
-    )
+    stdout_data, stderr_data = await asyncio.gather(proc.stdout.read(), proc.stderr.read())
     code = await proc.wait()
 
     assert code == 0

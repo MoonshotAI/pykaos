@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import os
 import shlex
-import stat
 from asyncio import StreamReader, StreamWriter
 from collections.abc import AsyncGenerator
 from pathlib import PurePath, PurePosixPath
@@ -55,19 +54,22 @@ class SSHKaos:
 
     def __init__(
         self,
+        *,
         host: str,
-        username: str,
         port: int = 22,
+        username: str | None = None,
         password: str | None = None,
-        key_filename: str | None = None,
-        known_hosts: str | None = None,
+        key_paths: list[str] | None = None,
+        key_contents: list[str] | None = None,
+        **options: object,
     ) -> None:
         self.host = host
-        self.username = username
         self.port = port
+        self.username = username
         self.password = password
-        self.key_filename = key_filename
-        self.known_hosts = known_hosts
+        self.key_paths = key_paths
+        self.key_contents = key_contents
+        self.options = options
 
         self._connection: asyncssh.SSHClientConnection | None = None
         self._sftp: asyncssh.SFTPClient | None = None
@@ -77,16 +79,20 @@ class SSHKaos:
     async def _ensure_connected(self) -> None:
         """Ensure SSH connection is established."""
         if self._connection is None:
-            # Prepare connection options
-            options = {}
+            options = {**self.options}
             if self.username:
                 options["username"] = self.username
             if self.password:
                 options["password"] = self.password
-            if self.key_filename:
-                options["client_keys"] = [self.key_filename]
-            if self.known_hosts:
-                options["known_hosts"] = asyncssh.read_known_hosts(self.known_hosts)
+            client_keys: list[str | asyncssh.SSHKey] = []
+            if self.key_contents:
+                client_keys.extend(
+                    [asyncssh.import_private_key(key) for key in self.key_contents]
+                )
+            if self.key_paths:
+                client_keys.extend(self.key_paths)
+            if client_keys:
+                options["client_keys"] = client_keys
 
             try:
                 self._connection = await asyncssh.connect(
@@ -97,7 +103,6 @@ class SSHKaos:
                 )
                 self._sftp = await self._connection.start_sftp_client()
             except Exception:
-                # Reset connection state on failure
                 self._connection = None
                 self._sftp = None
                 raise
@@ -108,7 +113,6 @@ class SSHKaos:
             await self._ensure_connected()
             assert self._connection is not None
 
-            # Get home directory by running 'echo $HOME'
             result = await self._connection.run("echo $HOME")
             if result.returncode == 0 and result.stdout:
                 if isinstance(result.stdout, bytes):
@@ -116,7 +120,7 @@ class SSHKaos:
                 else:
                     self._home_dir = result.stdout.strip()
             else:
-                # Fallback to /home/username
+                # Fallback to /home/<username>
                 self._home_dir = f"/home/{self.username}" if self.username else "/"
 
         return self._home_dir
@@ -139,11 +143,38 @@ class SSHKaos:
         base = await self._expand_home(self._cwd)
         return os.path.normpath(os.path.join(base, expanded))
 
+    async def _ssh_run(self, *args: str) -> tuple[int, str, str]:
+        """Execute a command on the remote server and return the return code, stdout, and stderr."""
+        if not args:
+            raise ValueError("At least one argument is required for _ssh_exec.")
+
+        await self._ensure_connected()
+        assert self._connection is not None
+
+        command = " ".join(shlex.quote(arg) for arg in args)
+
+        result = await self._connection.run(command, encoding=None)
+        if result.stdout:
+            if isinstance(result.stdout, bytes):
+                stdout = result.stdout.decode("utf-8", "ignore").strip()
+            else:
+                stdout = result.stdout.strip()
+        else:
+            stdout = ""
+        if result.stderr:
+            if isinstance(result.stderr, bytes):
+                stderr = result.stderr.decode("utf-8", "ignore").strip()
+            else:
+                stderr = result.stderr.strip()
+        else:
+            stderr = ""
+
+        return result.returncode or 0, stdout, stderr
+
     def pathclass(self) -> type[PurePath]:
         return PurePosixPath
 
     def gethome(self) -> KaosPath:
-        # Get the actual home directory path
         try:
             home = self._home_dir or "~"
             return KaosPath(home)
@@ -155,13 +186,14 @@ class SSHKaos:
 
     async def chdir(self, path: StrOrKaosPath) -> None:
         path_str = str(path)
-        # Resolve the path
         resolved_path = await self._resolve_path(path_str)
         # Verify it's a directory
         try:
             assert self._sftp
             stat_result = await self._sftp.stat(resolved_path)
             if not stat_result:
+                raise NotADirectoryError(f"Not a directory: {path_str}")
+            if stat_result.type != asyncssh.FILEXFER_TYPE_DIRECTORY:
                 raise NotADirectoryError(f"Not a directory: {path_str}")
         except asyncssh.SFTPError as e:
             raise OSError(f"chdir failed: {e}") from e
@@ -174,52 +206,46 @@ class SSHKaos:
         *,
         follow_symlinks: bool = True,
     ) -> StatResult:
-        await self._ensure_connected()
-        assert self._sftp is not None
-
         resolved_path = await self._resolve_path(str(path))
 
-        try:
-            st = await self._sftp.stat(resolved_path, follow_symlinks=follow_symlinks)
-        except asyncssh.SFTPError as e:
-            raise OSError(f"stat failed: {e}") from e
+        fmt = "%f %u %g %s %X %Y %Z %h %i %D"
+        args = ["stat"]
+        if follow_symlinks:
+            args.append("-L")
+        args += ["-c", fmt, resolved_path]
 
-        mode = int(st.permissions or 0)
+        returncode, stdout, stderr = await self._ssh_run(*args)
+        if returncode != 0:
+            raise OSError(f"stat failed: {stderr}")
 
-        # Some servers set file type bits separately from permissions (SFTPv4+).
-        file_type = cast(int | None, getattr(st, "type", None))
-        if file_type is not None and stat.S_IFMT(mode) == 0:
-            type_bits = {
-                asyncssh.FILEXFER_TYPE_DIRECTORY: stat.S_IFDIR,
-                asyncssh.FILEXFER_TYPE_SYMLINK: stat.S_IFLNK,
-                asyncssh.FILEXFER_TYPE_REGULAR: stat.S_IFREG,
-                asyncssh.FILEXFER_TYPE_CHAR_DEVICE: stat.S_IFCHR,
-                asyncssh.FILEXFER_TYPE_BLOCK_DEVICE: stat.S_IFBLK,
-                asyncssh.FILEXFER_TYPE_FIFO: stat.S_IFIFO,
-                asyncssh.FILEXFER_TYPE_SOCKET: stat.S_IFSOCK,
-            }.get(file_type)
-            if type_bits is not None:
-                mode |= type_bits
+        tokens = stdout.split()
+        if len(tokens) != 10:
+            raise OSError(f"stat returned unexpected output: {stdout!r}")
 
-        ctime = getattr(st, "crtime", None)
-        if ctime is None:
-            ctime = getattr(st, "ctime", None)
-        if ctime is None:
-            ctime = st.mtime
+        (
+            st_mode_hex,
+            st_uid,
+            st_gid,
+            st_size,
+            st_atime,
+            st_mtime,
+            st_ctime,
+            st_nlink,
+            st_ino,
+            st_dev,
+        ) = tokens
 
         return StatResult(
-            st_mode=mode,
-            st_uid=int(st.uid or 0),
-            st_gid=int(st.gid or 0),
-            st_size=int(st.size or 0),
-            st_atime=float(st.atime or 0),
-            st_mtime=float(st.mtime or 0),
-            st_ctime=float(ctime or 0),
-            # Fields not supported by SFTP:
-            # NOTE: These fields are not supported by SFTP, so we set them to 0.
-            st_ino=0,
-            st_dev=0,
-            st_nlink=int(getattr(st, "nlink", 0) or 0),
+            st_mode=int(st_mode_hex, 16),
+            st_uid=int(st_uid),
+            st_gid=int(st_gid),
+            st_size=int(st_size),
+            st_atime=float(st_atime),
+            st_mtime=float(st_mtime),
+            st_ctime=float(st_ctime),
+            st_ino=int(st_ino),
+            st_dev=int(st_dev, 16),
+            st_nlink=int(st_nlink),
         )
 
     async def iterdir(self, path: StrOrKaosPath) -> AsyncGenerator[KaosPath]:
@@ -245,23 +271,22 @@ class SSHKaos:
         *,
         case_sensitive: bool = True,
     ) -> AsyncGenerator[KaosPath]:
-        await self._ensure_connected()
-        assert self._connection is not None
-
         resolved_path = await self._resolve_path(str(path))
 
-        # Use glob command on remote server
-        cmd = f'find "{resolved_path}" -{"" if case_sensitive else "i"}name "{pattern}" -type f'
-        result = await self._connection.run(cmd)
+        name_flag = "-name" if case_sensitive else "-iname"
+        cmd = [
+            "find",
+            resolved_path,
+            name_flag,
+            pattern,
+        ]
 
-        if result.returncode == 0 and result.stdout:
-            if isinstance(result.stdout, bytes):
-                lines = result.stdout.decode("utf-8").strip().split("\n")
-            else:
-                lines = result.stdout.strip().split("\n")
-            for line in lines:
-                if line:
-                    yield KaosPath(line)
+        returncode, stdout, stderr = await self._ssh_run(*cmd)
+        if returncode != 0:
+            raise OSError(f"glob failed: {stderr}")
+        for line in stdout.splitlines():
+            if line:
+                yield KaosPath(line)
 
     async def readbytes(self, path: StrOrKaosPath) -> bytes:
         await self._ensure_connected()
@@ -292,6 +317,7 @@ class SSHKaos:
         encoding: str = "utf-8",
         errors: Literal["strict", "ignore", "replace"] = "strict",
     ) -> AsyncGenerator[str]:
+        # NOTE: readlines is not supported by SFTPClientFile
         text = await self.readtext(path, encoding=encoding, errors=errors)
         for line in text.splitlines():
             yield line
@@ -336,43 +362,27 @@ class SSHKaos:
         exist_ok: bool = False,
     ) -> None:
         await self._ensure_connected()
-        assert self._sftp is not None
-
         resolved_path = await self._resolve_path(str(path))
 
-        if parents:
+        if not exist_ok:
             try:
-                if not exist_ok:
-                    st = await self._sftp.stat(resolved_path)
-                    if stat.S_ISDIR(int(st.permissions or 0)):
-                        raise FileExistsError(f"{resolved_path} already exists")
-            except asyncssh.SFTPError:
-                pass
+                assert self._sftp is not None
+                exists = await self._sftp.exists(resolved_path)
+                if exists:
+                    raise FileExistsError(f"{resolved_path} already exists")
+            except asyncssh.SFTPError as e:
+                raise OSError(f"mkdir failed: {e}") from e
+            except Exception as e:
+                raise OSError(f"mkdir failed: {e}") from e
 
-            assert self._connection is not None
-            cmd = f"mkdir -p {shlex.quote(resolved_path)}"
-            result = await self._connection.run(cmd)
-            if result.returncode != 0:
-                msg = result.stderr or result.stdout or ""
-                if isinstance(msg, bytes):
-                    msg = msg.decode("utf-8", "ignore")
-                raise OSError(f"mkdir failed: {msg}".strip())
-            return
+        cmd = ["mkdir"]
+        if parents or exist_ok:
+            cmd.append("-p")
+        cmd.append(resolved_path)
 
-        try:
-            await self._sftp.mkdir(resolved_path)
-        except asyncssh.SFTPError as e:
-            if exist_ok:
-                try:
-                    st = await self._sftp.stat(resolved_path)
-                    if not stat.S_ISDIR(int(st.permissions or 0)):
-                        raise FileExistsError(
-                            f"{resolved_path} exists and is not a directory"
-                        )
-                    return
-                except asyncssh.SFTPError:
-                    pass
-            raise OSError(f"mkdir failed: {e}") from e
+        returncode, _, stderr = await self._ssh_run(*cmd)
+        if returncode != 0:
+            raise OSError(f"mkdir failed: {stderr}")
 
     async def exec(self, *args: str) -> Kaos.Process:
         if not args:
@@ -395,23 +405,3 @@ class SSHKaos:
         if self._connection:
             self._connection.close()
             self._connection = None
-
-
-# Default SSH KAOS instance factory
-def create_ssh_kaos(
-    host: str,
-    username: str,
-    port: int = 22,
-    password: str | None = None,
-    key_filename: str | None = None,
-    known_hosts: str | None = None,
-) -> SSHKaos:
-    """Create an SSH KAOS instance."""
-    return SSHKaos(
-        host=host,
-        username=username,
-        port=port,
-        password=password,
-        key_filename=key_filename,
-        known_hosts=known_hosts,
-    )
