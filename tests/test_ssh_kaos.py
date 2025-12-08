@@ -51,7 +51,7 @@ async def ssh_kaos(ssh_kaos_config: dict[str, str | None]) -> AsyncGenerator[SSH
 
 
 @pytest.fixture
-async def remote_base(ssh_kaos: SSHKaos) -> AsyncGenerator[str, None]:
+async def remote_base(ssh_kaos: SSHKaos) -> AsyncGenerator[str]:
     """为每个用例准备并清理远程工作目录。"""
     base = f"/tmp/kaos_test_{os.getpid()}_{uuid4().hex}"
     await ssh_kaos.mkdir(base, parents=True, exist_ok=True)
@@ -59,15 +59,9 @@ async def remote_base(ssh_kaos: SSHKaos) -> AsyncGenerator[str, None]:
     try:
         yield base
     finally:
-        try:
-            proc = await ssh_kaos.exec("rm", "-rf", base)
-            await proc.wait()
-        except Exception:
-            pass
-        try:
-            await ssh_kaos.chdir("~")
-        except Exception:
-            pass
+        proc = await ssh_kaos.exec("rm", "-rf", base)
+        await proc.wait()
+        await ssh_kaos.chdir("~")
 
 
 @pytest.fixture

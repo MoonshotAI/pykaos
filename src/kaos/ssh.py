@@ -178,7 +178,7 @@ class SSHKaos:
         try:
             home = self._home_dir or "~"
             return KaosPath(home)
-        except:
+        except Exception:
             return KaosPath("~")
 
     def getcwd(self) -> KaosPath:
