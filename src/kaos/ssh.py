@@ -170,7 +170,10 @@ class SSHKaos:
         *,
         follow_symlinks: bool = True,
     ) -> StatResult:
-        st = await self._sftp.stat(str(path), follow_symlinks=follow_symlinks)
+        try:
+            st = await self._sftp.stat(str(path), follow_symlinks=follow_symlinks)
+        except asyncssh.SFTPError as e:
+            raise OSError from e
 
         return StatResult(
             st_mode=_build_st_mode(st),
@@ -186,7 +189,9 @@ class SSHKaos:
         )
 
     async def iterdir(self, path: StrOrKaosPath) -> AsyncGenerator[KaosPath]:
+        print(f"iterdir path {path}")
         for entry in await self._sftp.listdir(str(path)):
+            print(f"entry {entry}")
             # NOTE: sftp listdir gives . and ..
             if entry in {".", ".."}:
                 continue
