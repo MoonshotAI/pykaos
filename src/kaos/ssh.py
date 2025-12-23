@@ -135,7 +135,7 @@ class SSHKaos:
             cwd = await sftp.realpath(".")
         else:
             cwd = home_dir
-        return cls(connection=connection, sftp=sftp, home=home_dir, cwd=cwd, host=host, port=port)
+        return cls(connection=connection, sftp=sftp, home=home_dir, cwd=cwd, host=host)
 
     def __init__(
         self,
