@@ -1,3 +1,4 @@
 # PyKAOS
 
-PyKAOS is a lightweight Python library providing an abstraction layer for agents to interact with operating systems. File operations and command executions via KAOS can be easily switched between local environment and remote systems over SSH.
+The development of this package has moved to the kimi-cli monorepo:
+https://github.com/MoonshotAI/kimi-cli/tree/main/packages/kaos.
